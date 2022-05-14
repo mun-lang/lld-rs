@@ -1,6 +1,6 @@
 [package]
 name = "lld_rs"
-version = "120.0.1"
+version = "130.0.0"
 authors = ["The Mun Team <team@mun-lang.org>"]
 edition = "2021"
 description = "Bindings for LLD"

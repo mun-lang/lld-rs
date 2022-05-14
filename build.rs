@@ -220,6 +220,7 @@ fn get_system_libraries() -> Vec<String> {
     llvm_config("--system-libs")
         .split(&[' ', '\n'] as &[char])
         .filter(|s| !s.is_empty())
+        .filter(|s| !s.starts_with("/"))
         .map(|flag| {
             if cfg!(target_env = "msvc") {
                 // Same as --libnames, foo.lib

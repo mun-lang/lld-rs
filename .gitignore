@@ -1,0 +1,6 @@
+/.vscode
+**/*.rs.bk
+Cargo.lock
+
+# Build artifacts
+**/target/*

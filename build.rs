@@ -9,7 +9,7 @@ use semver::Version;
 use std::env;
 use std::ffi::OsStr;
 use std::io::{self, ErrorKind};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 lazy_static! {
@@ -74,6 +74,20 @@ lazy_static! {
     };
 }
 
+fn target_env_is(name: &str) -> bool {
+    match env::var_os("CARGO_CFG_TARGET_ENV") {
+        Some(s) => s == name,
+        None => false,
+    }
+}
+
+fn target_os_is(name: &str) -> bool {
+    match env::var_os("CARGO_CFG_TARGET_OS") {
+        Some(s) => s == name,
+        None => false,
+    }
+}
+
 /// Try to find a system-wide version of llvm-config that is compatible with
 /// this crate.
 ///
@@ -134,8 +148,8 @@ fn is_blacklisted_llvm(llvm_version: &Version) -> Option<&'static str> {
             major,
             minor,
             patch,
-            pre: vec![],
-            build: vec![],
+            pre: semver::Prerelease::EMPTY,
+            build: semver::BuildMetadata::EMPTY,
         };
 
         if &bad_version == llvm_version {
@@ -160,14 +174,14 @@ fn is_compatible_llvm(llvm_version: &Version) -> bool {
         "LLVM_SYS_{}_STRICT_VERSIONING",
         env!("CARGO_PKG_VERSION_MAJOR")
     ))
-    .is_some()
+        .is_some()
         || cfg!(feature = "strict-versioning");
     if strict {
         llvm_version.major == CRATE_VERSION.major && llvm_version.minor == CRATE_VERSION.minor
     } else {
         llvm_version.major >= CRATE_VERSION.major
             || (llvm_version.major == CRATE_VERSION.major
-                && llvm_version.minor >= CRATE_VERSION.minor)
+            && llvm_version.minor >= CRATE_VERSION.minor)
     }
 }
 
@@ -188,8 +202,16 @@ fn llvm_config_ex<S: AsRef<OsStr>>(binary: S, arg: &str) -> io::Result<String> {
         .arg(arg)
         .arg("--link-static") // Don't use dylib for >= 3.9
         .output()
-        .map(|output| {
-            String::from_utf8(output.stdout).expect("Output from llvm-config was not valid UTF-8")
+        .and_then(|output| {
+            if output.stdout.is_empty() {
+                Err(io::Error::new(
+                    io::ErrorKind::NotFound,
+                    "llvm-config returned empty output",
+                ))
+            } else {
+                Ok(String::from_utf8(output.stdout)
+                    .expect("Output from llvm-config was not valid UTF-8"))
+            }
         })
 }
 
@@ -222,33 +244,85 @@ fn get_system_libraries() -> Vec<String> {
         .filter(|s| !s.is_empty())
         .filter(|s| !s.starts_with("/"))
         .map(|flag| {
-            if cfg!(target_env = "msvc") {
+            if target_env_is("msvc") {
                 // Same as --libnames, foo.lib
-                assert!(flag.ends_with(".lib"));
+                assert!(
+                    flag.ends_with(".lib"),
+                    "system library {:?} does not appear to be a MSVC library file",
+                    flag
+                );
                 &flag[..flag.len() - 4]
             } else {
-                // Linker flags style, -lfoo
-                assert!(flag.starts_with("-l"));
-                &flag[2..]
+                if flag.starts_with("-l") {
+                    // Linker flags style, -lfoo
+                    if target_os_is("macos") && flag.starts_with("-llib") && flag.ends_with(".tbd")
+                    {
+                        // .tdb libraries are "text-based stub" files that provide lists of symbols,
+                        // which refer to libraries shipped with a given system and aren't shipped
+                        // as part of the corresponding SDK. They're named like the underlying
+                        // library object, including the 'lib' prefix that we need to strip.
+                        return flag[5..flag.len() - 4].to_owned();
+                    }
+                    return flag[2..].to_owned();
+                }
+
+                let maybe_lib = Path::new(&flag);
+                if maybe_lib.is_file() {
+                    // Library on disk, likely an absolute path to a .so. We'll add its location to
+                    // the library search path and specify the file as a link target.
+                    println!(
+                        "cargo:rustc-link-search={}",
+                        maybe_lib.parent().unwrap().display()
+                    );
+
+                    // Expect a file named something like libfoo.so, or with a version libfoo.so.1.
+                    // Trim everything after and including the last .so and remove the leading 'lib'
+                    let soname = maybe_lib
+                        .file_name()
+                        .unwrap()
+                        .to_str()
+                        .expect("Shared library path must be a valid string");
+                    let stem = soname
+                        .rsplit_once(target_dylib_extension())
+                        .expect("Shared library should be a .so file")
+                        .0;
+
+                    stem.trim_start_matches("lib")
+                } else {
+                    panic!(
+                        "Unable to parse result of llvm-config --system-libs: was {:?}",
+                        flag
+                    )
+                }
             }
+                .to_owned()
         })
-        .chain(get_system_libcpp())
-        .map(str::to_owned)
+        .chain(get_system_libcpp().map(str::to_owned))
         .collect::<Vec<String>>()
+}
+
+fn target_dylib_extension() -> &'static str {
+    if target_os_is("macos") {
+        ".dylib"
+    } else {
+        ".so"
+    }
 }
 
 /// Get the library that must be linked for C++, if any.
 fn get_system_libcpp() -> Option<&'static str> {
-    if cfg!(target_env = "msvc") {
+    if target_env_is("msvc") {
         // MSVC doesn't need an explicit one.
         None
-    } else if cfg!(target_os = "macos") || cfg!(target_os = "freebsd") {
+    } else if target_os_is("macos") {
         // On OS X 10.9 and later, LLVM's libc++ is the default. On earlier
         // releases GCC's libstdc++ is default. Unfortunately we can't
         // reasonably detect which one we need (on older ones libc++ is
         // available and can be selected with -stdlib=lib++), so assume the
         // latest, at the cost of breaking the build on older OS releases
         // when LLVM was built against libstdc++.
+        Some("c++")
+    } else if target_os_is("freebsd") {
         Some("c++")
     } else {
         // Otherwise assume GCC's libstdc++.
@@ -269,13 +343,21 @@ fn get_link_libraries() -> Vec<String> {
         .map(|name| {
             // --libnames gives library filenames. Extract only the name that
             // we need to pass to the linker.
-            if cfg!(target_env = "msvc") {
+            if target_env_is("msvc") {
                 // LLVMfoo.lib
-                assert!(name.ends_with(".lib"));
+                assert!(
+                    name.ends_with(".lib"),
+                    "library name {:?} does not appear to be a MSVC library file",
+                    name
+                );
                 &name[..name.len() - 4]
             } else {
                 // libLLVMfoo.a
-                assert!(name.starts_with("lib") && name.ends_with(".a"));
+                assert!(
+                    name.starts_with("lib") && name.ends_with(".a"),
+                    "library name {:?} does not appear to be a static library",
+                    name
+                );
                 &name[3..name.len() - 2]
             }
         })
@@ -295,8 +377,8 @@ fn get_llvm_cxxflags() -> String {
         "LLVM_SYS_{}_NO_CLEAN_CFLAGS",
         env!("CARGO_PKG_VERSION_MAJOR")
     ))
-    .is_some();
-    if no_clean || cfg!(target_env = "msvc") {
+        .is_some();
+    if no_clean || target_env_is("msvc") {
         // MSVC doesn't accept -W... options, so don't try to strip them and
         // possibly strip something that should be retained. Also do nothing if
         // the user requests it.
@@ -352,7 +434,7 @@ fn main() {
         "LLVM_SYS_{}_USE_DEBUG_MSVCRT",
         env!("CARGO_PKG_VERSION_MAJOR")
     ))
-    .is_some();
+        .is_some();
     if cfg!(target_env = "msvc") && (use_debug_msvcrt || is_llvm_debug()) {
         println!("cargo:rustc-link-lib=msvcrtd");
     }
@@ -363,21 +445,17 @@ fn main() {
         "LLVM_SYS_{}_FFI_WORKAROUND",
         env!("CARGO_PKG_VERSION_MAJOR")
     ))
-    .is_some();
+        .is_some();
     if force_ffi {
         println!("cargo:rustc-link-lib=dylib=ffi");
     }
 
     println!("cargo:rustc-link-lib=static=lldCOFF");
     println!("cargo:rustc-link-lib=static=lldCommon");
-    println!("cargo:rustc-link-lib=static=lldCore");
-    println!("cargo:rustc-link-lib=static=lldDriver");
     println!("cargo:rustc-link-lib=static=lldELF");
     println!("cargo:rustc-link-lib=static=lldMachO");
     println!("cargo:rustc-link-lib=static=lldMinGW");
-    println!("cargo:rustc-link-lib=static=lldReaderWriter");
     println!("cargo:rustc-link-lib=static=lldWasm");
-    println!("cargo:rustc-link-lib=static=lldYAML");
 
     if cfg!(not(target_os = "windows")) {
         println!("cargo:rustc-link-lib=dylib=ffi");

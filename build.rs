@@ -400,10 +400,21 @@ fn is_llvm_debug() -> bool {
 fn main() {
     // Build the extra wrapper functions.
     std::env::set_var("CXXFLAGS", get_llvm_cxxflags());
-    cc::Build::new()
+    let mut build = cc::Build::new();
+
+    build
         .cpp(true)
-        .file("wrapper/lld-c.cpp")
-        .compile("lldwrapper");
+        .file("wrapper/lld-c.cpp");
+
+    if build.get_compiler().is_like_msvc() {
+        build.flag("/std:c++17");
+    } else {
+        build.flag("-std=c++17");
+    }
+
+    build.compile("lldwrapper");
+
+    println!("cargo:rerun-if-changed=wrapper/lld-c.cpp");
 
     if cfg!(feature = "no-llvm-linking") {
         return;

@@ -42,9 +42,9 @@ void mun_link_free_result(LldInvokeResult *result) {
 auto getLinkerForFlavor(LldFlavor flavor) {
     switch (flavor) {
         case Wasm:
-            return lld::elf::link;
-        case MachO:
             return lld::wasm::link;
+        case MachO:
+            return lld::macho::link;
         case Coff:
             return lld::coff::link;
         case Elf:
@@ -67,9 +67,9 @@ LldInvokeResult mun_lld_link(LldFlavor flavor, int argc, const char *const *argv
     // Copy arguments
     std::vector<const char *> args(argv, argv + argc);
 
-    // The elf and coff linkers expects the first argument to be the executable
+    // The ELF, wasm, and COFF linkers expects the first argument to be the executable
     // name..
-    if (flavor == Elf) {
+    if (flavor == Elf || flavor == Wasm) {
         args.insert(args.begin(), "lld");
     } else if (flavor == Coff) {
         args.insert(args.begin(), "lld.exe");

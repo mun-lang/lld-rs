@@ -38,6 +38,7 @@ void mun_link_free_result(LldInvokeResult *result) {
         free(reinterpret_cast<void *>(const_cast<char *>(result->messages)));
     }
 }
+}
 
 auto getLinkerForFlavor(LldFlavor flavor) {
     switch (flavor) {
@@ -52,6 +53,8 @@ auto getLinkerForFlavor(LldFlavor flavor) {
             return lld::elf::link;
     }
 }
+
+extern "C" {
 
 LldInvokeResult mun_lld_link(LldFlavor flavor, int argc, const char *const *argv) {
     LldInvokeResult result;

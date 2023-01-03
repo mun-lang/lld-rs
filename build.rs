@@ -450,17 +450,6 @@ fn main() {
         println!("cargo:rustc-link-lib=msvcrtd");
     }
 
-    // Link libffi if the user requested this workaround.
-    // See https://bitbucket.org/tari/llvm-sys.rs/issues/12/
-    let force_ffi = env::var_os(format!(
-        "LLVM_SYS_{}_FFI_WORKAROUND",
-        env!("CARGO_PKG_VERSION_MAJOR")
-    ))
-        .is_some();
-    if force_ffi {
-        println!("cargo:rustc-link-lib=dylib=ffi");
-    }
-
     println!("cargo:rustc-link-lib=static=lldCOFF");
     println!("cargo:rustc-link-lib=static=lldCommon");
     println!("cargo:rustc-link-lib=static=lldELF");
@@ -468,7 +457,7 @@ fn main() {
     println!("cargo:rustc-link-lib=static=lldMinGW");
     println!("cargo:rustc-link-lib=static=lldWasm");
 
-    if cfg!(not(target_os = "windows")) {
-        println!("cargo:rustc-link-lib=dylib=ffi");
+    if cfg!(target_os = "macos") {
+        println!("cargo:rustc-link-lib=dylib=xar");
     }
 }

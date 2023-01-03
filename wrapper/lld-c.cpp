@@ -70,12 +70,11 @@ LldInvokeResult mun_lld_link(LldFlavor flavor, int argc, const char *const *argv
     // Copy arguments
     std::vector<const char *> args(argv, argv + argc);
 
-    // The ELF, wasm, and COFF linkers expects the first argument to be the executable
-    // name..
-    if (flavor == Elf || flavor == Wasm) {
-        args.insert(args.begin(), "lld");
-    } else if (flavor == Coff) {
+    // All linkers expect the first argument to be the executable name.
+    if (flavor == Coff) {
         args.insert(args.begin(), "lld.exe");
+    } else {
+        args.insert(args.begin(), "lld");
     }
 
     // LLD is not thread-safe at all, so we guard parallel invocation with a mutex

@@ -13,9 +13,9 @@ categories = ["linkers", "compilers"]
 
 [dependencies]
 libc = "0.2.138"
+llvm-sys = "140.0.3"
 
 [build-dependencies]
 cc = "1.0"
 lazy_static = "1.4"
-regex = "1.7"
 semver = "1.0"

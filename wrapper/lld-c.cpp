@@ -78,7 +78,7 @@ LldInvokeResult mun_lld_link(LldFlavor flavor, int argc, const char *const *argv
     }
 
     // LLD is not thread-safe at all, so we guard parallel invocation with a mutex
-    std::unique_lock lock(concurrencyMutex);
+    std::unique_lock<std::mutex> lock(concurrencyMutex);
     result.success = link(args, outputStream, errorStream, false, false);
 
     // Delete the global context and clear the global context pointer, so that it

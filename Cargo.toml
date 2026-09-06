@@ -1,6 +1,6 @@
 [package]
 name = "lld_rs"
-version = "140.0.0"
+version = "221.0.0"
 authors = ["The Mun Team <team@mun-lang.org>"]
 edition = "2021"
 description = "Bindings for LLD"
@@ -13,7 +13,10 @@ categories = ["linkers", "compilers"]
 
 [dependencies]
 libc = "0.2.138"
-llvm-sys = "140.0.3"
+llvm-sys = "221.0.0"
+
+[features]
+no-llvm-linking = ["llvm-sys/no-llvm-linking"]
 
 [build-dependencies]
 cc = "1.0"

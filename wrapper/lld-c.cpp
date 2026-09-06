@@ -1,5 +1,10 @@
 #include <lld/Common/CommonLinkerContext.h>
 #include <lld/Common/Driver.h>
+LLD_HAS_DRIVER(coff)
+LLD_HAS_DRIVER(elf)
+LLD_HAS_DRIVER(macho)
+LLD_HAS_DRIVER(wasm)
+
 
 #include <cstdlib>
 #include <iostream>

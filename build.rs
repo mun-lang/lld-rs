@@ -20,11 +20,28 @@ lazy_static::lazy_static! {
     /// Filesystem path to an llvm-config binary for the correct version.
     static ref LLVM_CONFIG_PATH: PathBuf = {
         if let Some(path) = env::var_os(format!("DEP_LLVM_{}_CONFIG_PATH", CRATE_VERSION.major)) {
-            return path.into()
+            return path.into();
         }
 
-        println!("No suitable version of LLVM was found for lld-rs. lld-rs uses llvm-sys to locate the `llvm-config` binary.");
-        panic!("Could not find a compatible version of LLVM");
+        let fallback = PathBuf::from("llvm-config");
+        let version = Command::new(&fallback)
+            .arg("--version")
+            .output()
+            .ok()
+            .filter(|output| output.status.success())
+            .and_then(|output| String::from_utf8(output.stdout).ok())
+            .and_then(|version| Version::parse(version.trim()).ok());
+        if version
+            .as_ref()
+            .is_some_and(|version| version.major == CRATE_VERSION.major)
+        {
+            return fallback;
+        }
+
+        panic!(
+            "Could not find llvm-config for LLVM {}",
+            CRATE_VERSION.major
+        );
     };
 }
 
@@ -57,8 +74,8 @@ fn llvm_config(arg: &str) -> String {
 fn llvm_config_ex<S: AsRef<OsStr>>(binary: S, arg: &str) -> io::Result<String> {
     Command::new(binary)
         .arg(arg)
-        .arg("--link-static") // Don't use dylib for >= 3.9
-        .arg("core") // We only need core component things.
+        // Embedded LLD drivers depend on LLVM components beyond Core.
+        .arg("--link-static")
         .output()
         .and_then(|output| {
             if output.stdout.is_empty() {
@@ -82,13 +99,16 @@ fn get_system_libraries() -> Vec<String> {
         .filter(|s| !s.starts_with("/"))
         .map(|flag| {
             if target_env_is("msvc") {
-                // Same as --libnames, foo.lib
-                assert!(
-                    flag.ends_with(".lib"),
-                    "system library {:?} does not appear to be a MSVC library file",
-                    flag
-                );
-                &flag[..flag.len() - 4]
+                // llvm-config may report import libraries as either foo.lib or foo.dll.lib.
+                // MSVC resolves both through foo.lib.
+                flag.strip_suffix(".dll.lib")
+                    .or_else(|| flag.strip_suffix(".lib"))
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "system library {:?} does not appear to be a MSVC library file",
+                            flag
+                        )
+                    })
             } else {
                 if flag.starts_with("-l") {
                     // Linker flags style, -lfoo

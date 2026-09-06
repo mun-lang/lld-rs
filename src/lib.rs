@@ -73,7 +73,6 @@ pub fn link(target: LldFlavor, args: &[String]) -> LldResult {
 
     // Release the result
     unsafe { mun_link_free_result(&mut lld_result as *mut LldInvokeResult) };
-    drop(lld_result);
 
     result
 }

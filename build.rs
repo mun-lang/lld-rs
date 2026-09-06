@@ -17,15 +17,58 @@ lazy_static::lazy_static! {
         }
     };
 
+    /// Name of llvm-sys's installation-prefix override.
+    static ref ENV_LLVM_PREFIX: String =
+        format!("LLVM_SYS_{}_PREFIX", env!("CARGO_PKG_VERSION_MAJOR"));
+
     /// Filesystem path to an llvm-config binary for the correct version.
     static ref LLVM_CONFIG_PATH: PathBuf = {
         if let Some(path) = env::var_os(format!("DEP_LLVM_{}_CONFIG_PATH", CRATE_VERSION.major)) {
-            return path.into()
+            return path.into();
         }
 
-        println!("No suitable version of LLVM was found for lld-rs. lld-rs uses llvm-sys to locate the `llvm-config` binary.");
-        panic!("Could not find a compatible version of LLVM");
+        let prefix = env::var_os(&*ENV_LLVM_PREFIX).map(|path| PathBuf::from(path).join("bin"));
+        find_llvm_config(prefix.as_deref().unwrap_or_else(|| Path::new(""))).unwrap_or_else(|| {
+            panic!(
+                "Could not find llvm-config for LLVM {}",
+                CRATE_VERSION.major
+            )
+        })
     };
+}
+
+fn find_llvm_config(prefix: &Path) -> Option<PathBuf> {
+    llvm_config_binary_names()
+        .map(|name| prefix.join(name))
+        .find(|path| {
+            Command::new(path)
+                .arg("--version")
+                .output()
+                .ok()
+                .filter(|output| output.status.success())
+                .and_then(|output| String::from_utf8(output.stdout).ok())
+                .and_then(|version| Version::parse(version.trim()).ok())
+                .is_some_and(|version| version.major == CRATE_VERSION.major)
+        })
+}
+
+fn llvm_config_binary_names() -> impl Iterator<Item = String> {
+    let names = [
+        format!("llvm-config-{}", CRATE_VERSION.major),
+        format!("llvm-config{}", CRATE_VERSION.major),
+        format!("llvm{}-config", CRATE_VERSION.major),
+        format!(
+            "llvm-config-{}.{}",
+            CRATE_VERSION.major, CRATE_VERSION.minor
+        ),
+        format!("llvm-config{}{}", CRATE_VERSION.major, CRATE_VERSION.minor),
+        "llvm-config".to_owned(),
+    ];
+
+    names.into_iter().flat_map(|name| {
+        let executable = target_os_is("windows").then(|| format!("{name}.exe"));
+        executable.into_iter().chain(std::iter::once(name))
+    })
 }
 
 fn target_env_is(name: &str) -> bool {
@@ -57,8 +100,8 @@ fn llvm_config(arg: &str) -> String {
 fn llvm_config_ex<S: AsRef<OsStr>>(binary: S, arg: &str) -> io::Result<String> {
     Command::new(binary)
         .arg(arg)
-        .arg("--link-static") // Don't use dylib for >= 3.9
-        .arg("core") // We only need core component things.
+        // Embedded LLD drivers depend on LLVM components beyond Core.
+        .arg("--link-static")
         .output()
         .and_then(|output| {
             if output.stdout.is_empty() {
@@ -82,25 +125,27 @@ fn get_system_libraries() -> Vec<String> {
         .filter(|s| !s.starts_with("/"))
         .map(|flag| {
             if target_env_is("msvc") {
-                // Same as --libnames, foo.lib
-                assert!(
-                    flag.ends_with(".lib"),
-                    "system library {:?} does not appear to be a MSVC library file",
-                    flag
-                );
-                &flag[..flag.len() - 4]
+                // llvm-config may report import libraries as either foo.lib or foo.dll.lib.
+                // MSVC resolves both through foo.lib.
+                flag.strip_suffix(".dll.lib")
+                    .or_else(|| flag.strip_suffix(".lib"))
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "system library {:?} does not appear to be a MSVC library file",
+                            flag
+                        )
+                    })
             } else {
-                if flag.starts_with("-l") {
+                if let Some(name) = flag.strip_prefix("-l") {
                     // Linker flags style, -lfoo
-                    if target_os_is("macos") && flag.starts_with("-llib") && flag.ends_with(".tbd")
-                    {
+                    if target_os_is("macos") && name.starts_with("lib") && name.ends_with(".tbd") {
                         // .tdb libraries are "text-based stub" files that provide lists of symbols,
                         // which refer to libraries shipped with a given system and aren't shipped
                         // as part of the corresponding SDK. They're named like the underlying
                         // library object, including the 'lib' prefix that we need to strip.
-                        return flag[5..flag.len() - 4].to_owned();
+                        return name[3..name.len() - 4].to_owned();
                     }
-                    return flag[2..].to_owned();
+                    return name.to_owned();
                 }
 
                 let maybe_lib = Path::new(&flag);
@@ -132,7 +177,7 @@ fn get_system_libraries() -> Vec<String> {
                     )
                 }
             }
-                .to_owned()
+            .to_owned()
         })
         .chain(get_system_libcpp().map(str::to_owned))
         .collect::<Vec<String>>()
@@ -214,7 +259,7 @@ fn get_llvm_cxxflags() -> String {
         "LLVM_SYS_{}_NO_CLEAN_CFLAGS",
         env!("CARGO_PKG_VERSION_MAJOR")
     ))
-        .is_some();
+    .is_some();
     if no_clean || target_env_is("msvc") {
         // MSVC doesn't accept -W... options, so don't try to strip them and
         // possibly strip something that should be retained. Also do nothing if
@@ -235,13 +280,13 @@ fn is_llvm_debug() -> bool {
 }
 
 fn main() {
+    println!("cargo:rerun-if-env-changed={}", *ENV_LLVM_PREFIX);
+
     // Build the extra wrapper functions.
     std::env::set_var("CXXFLAGS", get_llvm_cxxflags());
     let mut build = cc::Build::new();
 
-    build
-        .cpp(true)
-        .file("wrapper/lld-c.cpp");
+    build.cpp(true).file("wrapper/lld-c.cpp");
 
     if build.get_compiler().is_like_msvc() {
         build.flag("/std:c++17");
@@ -265,7 +310,7 @@ fn main() {
 
     // Link LLVM libraries
     println!("cargo:rustc-link-search=native={}", libdir);
-    let blacklist = vec!["LLVMLineEditor"];
+    let blacklist = ["LLVMLineEditor"];
     for name in get_link_libraries()
         .iter()
         .filter(|n| !blacklist.iter().any(|blacklisted| n.contains(*blacklisted)))
@@ -282,7 +327,7 @@ fn main() {
         "LLVM_SYS_{}_USE_DEBUG_MSVCRT",
         env!("CARGO_PKG_VERSION_MAJOR")
     ))
-        .is_some();
+    .is_some();
     if cfg!(target_env = "msvc") && (use_debug_msvcrt || is_llvm_debug()) {
         println!("cargo:rustc-link-lib=msvcrtd");
     }
